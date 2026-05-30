@@ -346,7 +346,7 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
   const [apiError, setApiError] = useState(null);
 
   const [code, setCode] = useState(CODE_PRESETS[0].code);
-  const [codeOutput, setCodeOutput] = useState('');
+  const [codeOutput, setCodeOutput] = useState([]);
   const [codeRunning, setCodeRunning] = useState(false);
 
   const [sql, setSql] = useState(SQL_PRESETS[0].sql);
@@ -399,27 +399,151 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
 
   const runCode = async () => {
     setCodeRunning(true);
-    setCodeOutput('');
-    const logs = [];
-    const origLog = console.log;
-    const origError = console.error;
-    const origWarn = console.warn;
+    setCodeOutput([{ type: 'info', text: '▶ Running...' }]);
 
-    console.log = (...args) => logs.push({ type: 'log', text: args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ') });
-    console.error = (...args) => logs.push({ type: 'error', text: args.map(a => String(a)).join(' ') });
-    console.warn = (...args) => logs.push({ type: 'warn', text: args.map(a => String(a)).join(' ') });
+    // ── Transform: auto-await bare top-level function calls ──────────────
+    // Problem: user writes `fetchUsers()` (returns a Promise) but our runner
+    // wraps code in an async function and awaits IT — not the inner call.
+    // Fix: prefix any top-level bare call with `await` so async code resolves.
+    // `await` on a non-Promise is a no-op, so sync calls are unaffected.
+    function transformCode(src) {
+      let depth = 0;
+      return src.split('\n').map(line => {
+        const trimmed = line.trim();
+        // Count net brace change on this line to track block depth
+        const open  = (trimmed.match(/{/g) || []).length;
+        const close = (trimmed.match(/}/g) || []).length;
+        const wasTop = depth === 0;
+        depth += open - close;
+
+        // A top-level call: starts with an identifier(chain) + '('
+        // and is NOT already a declaration, keyword, comment, or arrow fn
+        const isBarCall = wasTop
+          && /^[a-zA-Z_$][a-zA-Z0-9_$.]*\s*\(/.test(trimmed)
+          && !/^(await|return|const|let|var|\/\/|\/\*|function|async\s+function|class|if|else|for|while|switch|throw|import|export|new\s)/.test(trimmed)
+          && !trimmed.includes('=>');
+
+        // Async IIFE opener at top level: (async () => { ... })()
+        // Matches both single-line and multi-line — only the opening line needs the prefix
+        const isIIFEOpener = wasTop && /^\(async\b/.test(trimmed);
+
+        return (isBarCall || isIIFEOpener) ? line.replace(trimmed, 'await ' + trimmed) : line;
+      }).join('\n');
+    }
+
+    // ── Run inside a blob-URL Web Worker for isolation ───────────────────
+    // This lets us terminate hanging code (infinite loops, stuck awaits).
+    // The worker serialises console output and posts it back as messages.
+    const TIMEOUT_MS = 10_000;
+
+    const logs = [];
+
+    const workerSrc = `
+      // Capture console inside the worker
+      const __logs = [];
+      const __push = (type) => (...args) => {
+        __logs.push({
+          type,
+          text: args.map(a => {
+            if (a === null) return 'null';
+            if (a === undefined) return 'undefined';
+            if (typeof a === 'object') {
+              try { return JSON.stringify(a, null, 2); } catch { return String(a); }
+            }
+            return String(a);
+          }).join(' ')
+        });
+        self.postMessage({ type: 'log', entry: __logs[__logs.length - 1] });
+      };
+      self.console = {
+        log:   __push('log'),
+        error: __push('error'),
+        warn:  __push('warn'),
+        info:  __push('log'),
+        dir:   __push('log'),
+        table: __push('log'),
+      };
+
+      // Also expose fetch so async presets that call fetch work
+      // (Workers have fetch available natively in modern browsers)
+
+      self.onmessage = async (e) => {
+        try {
+          const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+          const fn = new AsyncFunction(e.data);
+          await fn();
+          self.postMessage({ type: 'done' });
+        } catch (err) {
+          self.postMessage({ type: 'error', text: 'Runtime Error: ' + err.message });
+          self.postMessage({ type: 'done' });
+        }
+      };
+    `;
+
+    let worker;
+    let timer;
 
     try {
-      const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
-      const fn = new AsyncFunction(code);
-      await fn();
+      const blob = new Blob([workerSrc], { type: 'application/javascript' });
+      const url  = URL.createObjectURL(blob);
+      worker = new Worker(url);
+      URL.revokeObjectURL(url);
+
+      await new Promise((resolve) => {
+        // Timeout guard — kills hanging workers (infinite loops etc.)
+        timer = setTimeout(() => {
+          logs.push({ type: 'error', text: `⏱ Execution timed out after ${TIMEOUT_MS / 1000}s.\nTip: avoid infinite loops. Use a counter-guarded while loop instead.` });
+          resolve();
+        }, TIMEOUT_MS);
+
+        worker.onmessage = (e) => {
+          const { type, entry, text } = e.data;
+          if (type === 'log')   { logs.push(entry); }
+          if (type === 'error') { logs.push({ type: 'error', text }); }
+          if (type === 'done')  { resolve(); }
+        };
+
+        worker.onerror = (e) => {
+          logs.push({ type: 'error', text: 'Worker error: ' + (e.message || 'unknown') });
+          resolve();
+        };
+
+        // Send transformed code to worker
+        worker.postMessage(transformCode(code));
+      });
+
     } catch (err) {
-      logs.push({ type: 'error', text: `Runtime Error: ${err.message}` });
+      // Fallback: some environments block blob Workers (e.g. strict CSP).
+      // Fall back to AsyncFunction in the main thread with console patching.
+      logs.push({ type: 'warn', text: '⚠ Running in main thread (Web Worker unavailable)' });
+      const origLog   = console.log;
+      const origError = console.error;
+      const origWarn  = console.warn;
+      const push = (type) => (...args) => logs.push({
+        type,
+        text: args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ')
+      });
+      console.log   = push('log');
+      console.error = push('error');
+      console.warn  = push('warn');
+      try {
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        await Promise.race([
+          new AsyncFunction(transformCode(code))(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error(`Timed out after ${TIMEOUT_MS / 1000}s`)), TIMEOUT_MS))
+        ]);
+      } catch (e) {
+        logs.push({ type: 'error', text: 'Runtime Error: ' + e.message });
+      } finally {
+        console.log   = origLog;
+        console.error = origError;
+        console.warn  = origWarn;
+      }
     } finally {
-      console.log = origLog;
-      console.error = origError;
-      console.warn = origWarn;
-      setCodeOutput(logs);
+      clearTimeout(timer);
+      if (worker) worker.terminate();
+      // Filter the "Running..." placeholder and set real output
+      setCodeOutput(logs.length ? logs : [{ type: 'log', text: '(no output)' }]);
       setCodeRunning(false);
     }
   };
@@ -559,7 +683,7 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
             <div className="sim-section">
               <div className="api-presets">
                 {CODE_PRESETS.map((p, i) => (
-                  <button key={i} className="preset-btn" onClick={() => { setCode(p.code); setCodeOutput(''); }}>
+                  <button key={i} className="preset-btn" onClick={() => { setCode(p.code); setCodeOutput([]); }}>
                     {p.label}
                   </button>
                 ))}
@@ -583,14 +707,16 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
                 <div className="code-output-wrap">
                   <div className="editor-header">
                     <span>Output (console)</span>
-                    <button className="clear-btn" onClick={() => setCodeOutput('')}>Clear</button>
+                    <button className="clear-btn" onClick={() => setCodeOutput([])}>Clear</button>
                   </div>
                   <div className="code-output">
-                    {!codeOutput && <span className="output-placeholder">Run code to see output...</span>}
+                    {(!codeOutput || codeOutput.length === 0) && (
+                      <span className="output-placeholder">Run code to see output…</span>
+                    )}
                     {codeOutput && codeOutput.map((line, i) => (
                       <div key={i} className={`output-line ${line.type}`}>
                         <span className="output-type">
-                          {line.type === 'error' ? '✗' : line.type === 'warn' ? '⚠' : '›'}
+                          {line.type === 'error' ? '✗' : line.type === 'warn' ? '⚠' : line.type === 'info' ? 'ℹ' : '›'}
                         </span>
                         <pre>{line.text}</pre>
                       </div>
