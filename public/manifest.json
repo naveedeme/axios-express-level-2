@@ -1,0 +1,15 @@
+{
+  "name": "BackendCraft — 10-Day Course",
+  "short_name": "BackendCraft",
+  "description": "Master Express, Axios & React Query in 10 days with interactive examples and simulators",
+  "theme_color": "#0f1117",
+  "background_color": "#0f1117",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "scope": "/backend-craft-course/",
+  "start_url": "/backend-craft-course/",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
