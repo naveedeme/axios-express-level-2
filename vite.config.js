@@ -11,10 +11,14 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      // injectManifest mode: we own the SW file completely.
+      // This avoids the generateSW sub-path registration bug where
+      // the auto-generated SW fails to install on GitHub Pages sub-paths.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
       registerType: 'autoUpdate',
       includeAssets: ['icon.svg', 'icon-192.png', 'icon-512.png'],
-      // vite-plugin-pwa automatically uses `base` for scope and start_url
-      // when they are not set explicitly, so no hardcoded paths here.
       manifest: {
         name: 'BackendCraft — 10-Day Course',
         short_name: 'BackendCraft',
@@ -28,10 +32,9 @@ export default defineConfig({
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }
         ]
       },
-      workbox: {
+      injectManifest: {
+        // Precache all JS, CSS, HTML, images and font files
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        // All assets including woff2 font files are precached — app works fully offline
-        runtimeCaching: []
       }
     })
   ]
