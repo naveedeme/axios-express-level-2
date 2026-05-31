@@ -11,10 +11,73 @@ const PRESET_REQUESTS = [
   { label: 'GitHub API', method: 'GET', url: 'https://api.github.com/users/octocat', body: '' },
 ];
 
+// ── Offline mock data — mirrors JSONPlaceholder responses exactly ─────────
+// Injected into the Web Worker so fetch() calls work without any network.
+const MOCK_DB = {
+  users: [
+    { id: 1, name: 'Leanne Graham',  username: 'Bret',    email: 'Sincere@april.biz',       phone: '1-770-736-8031', website: 'hildegard.org',  company: { name: 'Romaguera-Crona' } },
+    { id: 2, name: 'Ervin Howell',   username: 'Antonette', email: 'Shanna@melissa.tv',      phone: '010-692-6593',   website: 'anastasia.net',  company: { name: 'Deckow-Crist' } },
+    { id: 3, name: 'Clementine Bauch', username: 'Samantha', email: 'Nathan@yesenia.net',    phone: '1-463-123-4447', website: 'ramiro.info',    company: { name: 'Romaguera-Jacobson' } },
+    { id: 4, name: 'Patricia Lebsack', username: 'Karianne', email: 'Julianne.OConner@kory.org', phone: '493-170-9623', website: 'kale.biz',   company: { name: 'Robel-Corkery' } },
+    { id: 5, name: 'Chelsey Dietrich', username: 'Kamren',  email: 'Lucio_Hettinger@annie.ca', phone: '(254)954-1289', website: 'demarco.info', company: { name: 'Keebler LLC' } },
+    { id: 6, name: 'Mrs. Dennis Schulist', username: 'Leopoldo_Corkery', email: 'Karley_Dach@jasper.info', phone: '1-477-935-8478', website: 'ola.org', company: { name: 'Considine-Lockman' } },
+    { id: 7, name: 'Kurtis Weissnat', username: 'Elwyn.Skiles', email: 'Telly.Hoeger@billy.biz', phone: '210.067.6132', website: 'elvis.io',  company: { name: 'Johns Group' } },
+    { id: 8, name: 'Nicholas Runolfsdottir V', username: 'Maxime_Nienow', email: 'Sherwood@rosamond.me', phone: '586.493.6943', website: 'jacynthe.com', company: { name: 'Abernathy Group' } },
+    { id: 9, name: 'Glenna Reichert', username: 'Delphine', email: 'Chaim_McDermott@dana.io', phone: '(775)976-6794', website: 'conrad.com', company: { name: 'Yost and Sons' } },
+    { id: 10, name: 'Clementina DuBuque', username: 'Moriah.Stanton', email: 'Rey.Padberg@karina.biz', phone: '024-648-3804', website: 'ambrose.net', company: { name: 'Hoeger LLC' } },
+  ],
+  posts: [
+    { id: 1, userId: 1, title: 'sunt aut facere repellat provident occaecati excepturi optio reprehenderit', body: 'quia et suscipit suscipit recusandae consequuntur expedita et cum reprehenderit molestiae ut ut quas totam nostrum rerum est autem sunt rem eveniet architecto' },
+    { id: 2, userId: 1, title: 'qui est esse', body: 'est rerum tempore vitae sequi sint nihil reprehenderit dolor beatae ea dolores neque fugiat blanditiis voluptate porro vel nihil molestiae ut reiciendis' },
+    { id: 3, userId: 1, title: 'ea molestias quasi exercitationem repellat qui ipsa sit aut', body: 'et iusto sed quo iure voluptatem occaecati omnis eligendi aut ad voluptatem doloribus vel accusantium quis pariatur molestiae porro eius odio et labore et velit' },
+    { id: 4, userId: 2, title: 'eum et est occaecati', body: 'ullam et saepe reiciendis voluptatem adipisci sit amet autem assumenda provident rerum culpa quis hic commodi nesciunt rem tenetur doloremque ipsam iure quis sunt voluptatem' },
+    { id: 5, userId: 2, title: 'nesciunt quas odio', body: 'repudiandae veniam quaerat sunt sed alias aut fugiat sit autem sed est voluptatem omnis possimus esse voluptatibus quis est aut tenetur dolor neque' },
+  ],
+  todos: [
+    { id: 1,  userId: 1, title: 'delectus aut autem',                                completed: false },
+    { id: 2,  userId: 1, title: 'quis ut nam facilis et officia qui',                  completed: false },
+    { id: 3,  userId: 1, title: 'fugiat veniam minus',                                 completed: false },
+    { id: 4,  userId: 1, title: 'et porro tempora',                                    completed: true  },
+    { id: 5,  userId: 1, title: 'laboriosam mollitia et enim quasi adipisci quia provident illum', completed: false },
+    { id: 6,  userId: 1, title: 'qui ullam ratione quibusdam voluptatem quia omnis',   completed: false },
+    { id: 7,  userId: 1, title: 'illo expedita consequatur quia in',                   completed: false },
+    { id: 8,  userId: 1, title: 'quo adipisci enim quam ut ab',                        completed: true  },
+    { id: 9,  userId: 1, title: 'molestiae perspiciatis ipsa',                         completed: false },
+    { id: 10, userId: 1, title: 'illo est ratione doloremque quia maiores aut',         completed: true  },
+  ],
+};
+
+// Simulates fetch() against jsonplaceholder URLs — returns the same shape offline
+function mockFetch(url) {
+  const u = String(url);
+  const limitMatch  = u.match(/[?&]_limit=(\d+)/);
+  const limit       = limitMatch ? parseInt(limitMatch[1]) : Infinity;
+  const completedMatch = u.match(/[?&]completed=(true|false)/);
+
+  let data;
+  if (u.includes('/users'))  data = MOCK_DB.users.slice(0, limit);
+  else if (u.includes('/posts')) data = MOCK_DB.posts.slice(0, limit);
+  else if (u.includes('/todos')) {
+    let rows = MOCK_DB.todos;
+    if (completedMatch) rows = rows.filter(t => t.completed === (completedMatch[1] === 'true'));
+    data = rows.slice(0, limit);
+  }
+  else data = { error: 'mock: endpoint not found', url: u };
+
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    json: () => Promise.resolve(data),
+    text: () => Promise.resolve(JSON.stringify(data)),
+  });
+}
+
 const CODE_PRESETS = [
   {
     label: 'Async/Await Fetch',
     code: `// Fetch data with async/await
+// Uses a built-in mock — works fully offline
 async function fetchUsers() {
   try {
     const response = await fetch('https://jsonplaceholder.typicode.com/users');
@@ -56,6 +119,7 @@ console.log('Total inventory value:', '$' + total);`
   {
     label: 'Promise.all',
     code: `// Parallel requests with Promise.all
+// Uses a built-in mock — works fully offline
 async function fetchDashboard() {
   console.log('Fetching dashboard data...');
   
@@ -105,7 +169,7 @@ function simulateExpressRoute(req) {
   };
 }
 
-// Simulate: GET /users?page=1&limit=2&search=
+// Simulate: GET /users?page=1&limit=2&search=a
 const result = simulateExpressRoute({ query: { page: 1, limit: 2, search: 'a' } });
 console.log('Response:', JSON.stringify(result, null, 2));`
   },
@@ -144,6 +208,7 @@ class QueryCache {
 
 async function main() {
   const cache = new QueryCache();
+  // fetch() here uses the built-in mock — works offline
   const fetchUsers = () =>
     fetch('https://jsonplaceholder.typicode.com/users?_limit=3').then(r => r.json());
   
@@ -438,22 +503,29 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
 
     const logs = [];
 
+    // Serialise mock data so it can be embedded as a literal in the worker blob
+    const mockDbJson = JSON.stringify(MOCK_DB);
+    const mockFetchSrc = mockFetch.toString(); // pass the function definition as text
+
     const workerSrc = `
-      // Capture console inside the worker
-      const __logs = [];
+      // ── Offline mock fetch ─────────────────────────────────────────────
+      // Overrides the native fetch() inside this worker so code-runner presets
+      // that call jsonplaceholder URLs work fully offline.
+      const __MOCK_DB = ${mockDbJson};
+      ${mockFetchSrc}
+      self.fetch = mockFetch;
+
+      // ── Console capture ────────────────────────────────────────────────
       const __push = (type) => (...args) => {
-        __logs.push({
-          type,
-          text: args.map(a => {
-            if (a === null) return 'null';
-            if (a === undefined) return 'undefined';
-            if (typeof a === 'object') {
-              try { return JSON.stringify(a, null, 2); } catch { return String(a); }
-            }
-            return String(a);
-          }).join(' ')
-        });
-        self.postMessage({ type: 'log', entry: __logs[__logs.length - 1] });
+        const text = args.map(a => {
+          if (a === null) return 'null';
+          if (a === undefined) return 'undefined';
+          if (typeof a === 'object') {
+            try { return JSON.stringify(a, null, 2); } catch { return String(a); }
+          }
+          return String(a);
+        }).join(' ');
+        self.postMessage({ type: 'log', entry: { type, text } });
       };
       self.console = {
         log:   __push('log'),
@@ -463,9 +535,6 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
         dir:   __push('log'),
         table: __push('log'),
       };
-
-      // Also expose fetch so async presets that call fetch work
-      // (Workers have fetch available natively in modern browsers)
 
       self.onmessage = async (e) => {
         try {
@@ -519,6 +588,7 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
       const origLog   = console.log;
       const origError = console.error;
       const origWarn  = console.warn;
+      const origFetch = window.fetch;
       const push = (type) => (...args) => logs.push({
         type,
         text: args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ')
@@ -526,6 +596,7 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
       console.log   = push('log');
       console.error = push('error');
       console.warn  = push('warn');
+      window.fetch  = mockFetch; // offline mock in fallback path too
       try {
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
         await Promise.race([
@@ -538,6 +609,7 @@ export default function Simulator({ onClose, initialTab, currentDay }) {
         console.log   = origLog;
         console.error = origError;
         console.warn  = origWarn;
+        window.fetch  = origFetch;
       }
     } finally {
       clearTimeout(timer);

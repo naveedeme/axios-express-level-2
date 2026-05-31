@@ -1,5 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Syne:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
-
+/* Fonts loaded locally via @fontsource in main.jsx — no Google Fonts network request */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
